@@ -1,0 +1,1 @@
+export { setVolumeBoostEnabled } from './src';

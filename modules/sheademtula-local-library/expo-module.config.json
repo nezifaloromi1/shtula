@@ -1,0 +1,5 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": { "modules": ["LocalLibraryModule"] },
+  "android": { "modules": ["expo.modules.sheademtulalocallibrary.LocalLibraryModule"] }
+}

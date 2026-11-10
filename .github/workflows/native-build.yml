@@ -1,0 +1,167 @@
+name: Native build verification
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Native platform to compile
+        required: true
+        type: choice
+        options:
+          - all
+          - android
+          - ios
+        default: all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify source before native builds
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.23.3
+          package-manager-cache: false
+
+      - name: Install project dependencies
+        run: bash scripts/ci-install-dependencies.sh
+
+      - name: Run full source verification
+        run: npm run verify:all
+
+      - name: Run semantic TypeScript check
+        run: npm run typecheck
+
+      - name: Check Expo SDK package compatibility
+        run: npx expo install --check
+
+  android:
+    name: Android debug APK
+    needs: verify
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'android'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.23.3
+          package-manager-cache: false
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK tools
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK Platform 37 and Build Tools
+        run: sdkmanager --install "platforms;android-37" "build-tools;37.0.0" "platform-tools"
+
+      - name: Install project dependencies
+        run: bash scripts/ci-install-dependencies.sh
+
+      - name: Generate Android native project
+        run: npx expo prebuild --platform android --clean --no-install
+
+      - name: Compile Android debug APK
+        run: ./android/gradlew --no-daemon --stacktrace -p android :app:assembleDebug
+
+      - name: Upload Android debug APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: sheademtula-android-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  ios:
+    name: iOS simulator build
+    needs: verify
+    if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'ios'
+    runs-on: xcode-27
+    timeout-minutes: 90
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.23.3
+          package-manager-cache: false
+
+      - name: Confirm Xcode toolchain
+        run: xcodebuild -version
+
+      - name: Install project dependencies
+        run: bash scripts/ci-install-dependencies.sh
+
+      - name: Generate iOS native project
+        run: npx expo prebuild --platform ios --clean --no-install
+
+      - name: Install CocoaPods dependencies
+        working-directory: ios
+        run: pod install --repo-update
+
+      - name: Resolve generated workspace and app scheme
+        id: xcode-project
+        shell: bash
+        run: |
+          workspace="$(find ios -maxdepth 1 -type d -name '*.xcworkspace' ! -name 'Pods.xcworkspace' -print -quit)"
+          if [[ -z "$workspace" ]]; then
+            echo 'No generated Xcode workspace was found.' >&2
+            exit 1
+          fi
+          xcodebuild -list -json -workspace "$workspace" > "$RUNNER_TEMP/sheademtula-xcode-list.json"
+          scheme="$(node --input-type=commonjs - "$RUNNER_TEMP/sheademtula-xcode-list.json" <<'NODE'
+          const fs = require('node:fs');
+          const data = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const schemes = data.workspace?.schemes ?? data.project?.schemes ?? [];
+          const appScheme = schemes.find((name) => !name.startsWith('Pods-') && !name.endsWith('Tests'));
+          if (!appScheme) throw new Error(`No application scheme found. Available schemes: ${schemes.join(', ')}`);
+          process.stdout.write(appScheme);
+          NODE
+          )"
+          echo "workspace=$workspace" >> "$GITHUB_OUTPUT"
+          echo "scheme=$scheme" >> "$GITHUB_OUTPUT"
+
+      - name: Compile iOS simulator app
+        run: |
+          xcodebuild \
+            -workspace "${{ steps.xcode-project.outputs.workspace }}" \
+            -scheme "${{ steps.xcode-project.outputs.scheme }}" \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/sheademtula-derived-data" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Upload iOS simulator app
+        uses: actions/upload-artifact@v7
+        with:
+          name: sheademtula-ios-simulator-app
+          path: ${{ runner.temp }}/sheademtula-derived-data/Build/Products/Debug-iphonesimulator/*.app
+          if-no-files-found: error
+          retention-days: 14

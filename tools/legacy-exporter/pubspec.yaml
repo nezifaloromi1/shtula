@@ -1,0 +1,8 @@
+name: sheademtula_legacy_exporter
+description: Read-only exporter for the original Shead emtula Flutter Sembast database.
+publish_to: none
+version: 1.0.0+1
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+dependencies:
+  sembast: 3.8.3

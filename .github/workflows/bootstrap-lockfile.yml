@@ -1,0 +1,56 @@
+name: Bootstrap npm lockfile
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-lockfile-bootstrap-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bootstrap:
+    name: Resolve, validate and export package-lock.json
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.23.3
+          package-manager-cache: false
+
+      - name: Generate npm lockfile without running package scripts
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+
+      - name: Verify lockfile matches direct dependencies
+        run: node scripts/check-lockfile.mjs
+
+      - name: Verify clean installation from generated lockfile
+        run: npm ci --no-audit --no-fund
+
+      - name: Run source and semantic checks
+        run: |
+          npm run verify:all
+          npm run typecheck
+          npx expo install --check
+
+      - name: Write lockfile checksum
+        if: always() && hashFiles('package-lock.json') != ''
+        run: sha256sum package-lock.json > package-lock.sha256
+
+      - name: Upload lockfile for review and commit
+        if: always() && hashFiles('package-lock.json') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: sheademtula-package-lock-${{ github.run_id }}
+          path: |
+            package-lock.json
+            package-lock.sha256
+          if-no-files-found: error
+          retention-days: 14
